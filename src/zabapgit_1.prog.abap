@@ -6,3 +6,5 @@
 REPORT zabapgit_1.
 
 WRITE : 'Welcome to ABAPGit'.
+
+WRITE : 'Welcome to ABAPGit from Git to SAP GUI'.
