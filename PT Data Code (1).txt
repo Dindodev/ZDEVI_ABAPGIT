@@ -1,0 +1,404 @@
+************************************************************************
+* PROGRAM ID           : /GLB/RGTCS_EDI_CUSTOM_DATA                     *
+* PROGRAM TITLE        : Inbound EDI Custom Data                       *
+* AUTHOR               : A.Sreedhar                                    *
+* SUPPLIER             : IBM                                           *
+* DATE                 : 22/05/2006                                    *
+* DEVELOPMENT ID       : GDEVWR0012229                                 *
+* CTS Transport        : GD2K979811                                    *
+* CHANGE REQUEST NUMBER:                                               *
+* DESCRIPTION          : This user exit Updates the Inbound EDI Orders *
+*                        Custom Data into Custom Tables.               *
+*----------------------------------------------------------------------*
+* CHANGE HISTORY LOG                                                   *
+*----------------------------------------------------------------------*
+* MOD. NO.|  DATE     | NAME                | CTS        | CHNG REF #  *
+*----------------------------------------------------------------------*
+* MOD-001 | 01/01/09  | Amartya Chakraborty | GD2K9A13GR | DEVCR0017680*
+* DESCRIPTION : During the order creation the main items as well as the*
+*               subitems are updated in the PTDATA table               *
+*----------------------------------------------------------------------*
+* MOD-002 | 14/04/09  |Pradeep K Gupta | GD2K9A19HC  |   IM13347478    *
+* DESCRIPTION :Updating the line item number (POSNR) in PTDATA from the*
+* Idoc but not from the Order. As a fix we have taken from order       *
+*----------------------------------------------------------------------*
+* MOD-003 | 15/05/09  |Dwiti Pradhan   | GD2K9A1B9K  |   IM13659762    *
+* DESCRIPTION : At times when the idoc item in EDP01 does not contain  *
+* leading zeroes, the read on XVBAP fails and hence the order item no. *
+* is not retrieved.                                                    *
+*----------------------------------------------------------------------*
+* MOD-004 | 10/09/09  |Asmita Pal   |  GD2K9A1HJV  |   DEVWR0022349    *
+* DESCRIPTION : In case of ZRR creation from refernce order or invoice,*
+* the item document flow has been updated, which was not happening     *
+* before                                                               *
+*----------------------------------------------------------------------*
+* MOD-005 | 18/03/2013  |R.V.Sathyanarayanan | RD2K9AEHO2| RM0005973741*
+* SUPPLIER : IBM                                                       *
+* DESCRIPTION :Code adjustment done to remove the flag check data_allow*
+*              as it is used for manual entry                          *
+*----------------------------------------------------------------------*
+* MOD-006H | 10/04/2018  | Pritam Natua  | ND2K9A3QCC  | DEVWR0037279  *
+* SUPPLIER : IBM                                                       *
+* DESCRIPTION : Create Barcode in Sales Document and attach the same.  *
+*----------------------------------------------------------------------*
+* MOD-007H | 06/08/2018 | Anindita Ghosh | RM0030133845 | ND2K9A512S   *
+* SUPPLIER    : IBM                                                    *
+* DESCRIPTION : Resolve Pricing issue due to changes in LTT modules    *
+************************************************************************
+FUNCTION /glb/rgt_inbound_edi_cust_data.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     VALUE(SALES_DOCUMENT) TYPE  VBELN OPTIONAL
+*"     VALUE(DOCNUM) TYPE  EDI_DOCNUM OPTIONAL
+*"  TABLES
+*"      DIDOC_DATA STRUCTURE  EDIDD OPTIONAL
+*"      DIDOC_STATUS STRUCTURE  BDIDOCSTAT OPTIONAL
+*"      DIDOC_CNTRL STRUCTURE  EDIDC OPTIONAL
+*"----------------------------------------------------------------------
+
+* Local Table type Declaration
+  TYPES: l_ty_t_edidd    TYPE STANDARD TABLE OF edidd,
+         l_ty_t_custdata TYPE STANDARD TABLE OF /glb/rgtt_ptdata,
+         l_ty_t_vbap     TYPE STANDARD TABLE OF vbap.       "MOD-001++
+
+* Local Table Declaration
+  DATA : l_i_config          TYPE  ty_t_config,
+         i_xvbap             TYPE TABLE OF vbapvb,
+         l_i_temp            TYPE  l_ty_t_edidd,
+         l_i_custdata        TYPE  l_ty_t_custdata,
+         l_v_barcode         TYPE  bds_barco,         "MOD-006H++
+         l_flg_barcd_success TYPE flag.        "MOD-006H++
+
+* Begin of MOD-004++
+  DATA :       l_v_barcode_attach TYPE /glb/rgt_fname,
+               l_V_index          TYPE sytabix,
+               l_wa_vbfa    TYPE vbfavb,
+               l_i_vbfa     TYPE TABLE OF vbfavb,
+               l_v_vbeln    TYPE vbeln,
+               l_wa_e1edp01 TYPE e1edp01,
+               l_wa_e1edp02 TYPE e1edp02,
+               l_wa_xvbap   TYPE vbap,
+               l_v_posex    TYPE posnr,
+               l_i_yvbfa    TYPE STANDARD TABLE OF vbfavb,
+               l_v_auart    TYPE auart,
+               l_v_erdat    TYPE erdat.     "MOD-006H++
+* End of MOD-004++
+
+* Local Work Area Declaration
+  DATA : l_wa_config     TYPE  ty_config,
+         l_wa_cust_seg   TYPE  ty_cust_seg,
+         l_wa_custdata   TYPE  /glb/rgtt_ptdata,
+         l_wa_didoc_data TYPE  edidd,
+         l_wa_e1edk01    TYPE  e1edk01,
+         l_v_idoc_item   TYPE posex,                      "MOD-002++
+         l_i_xvbap       TYPE STANDARD TABLE OF vbapvb.   "mod-001++
+
+* Field Symbol Declaration
+  FIELD-SYMBOLS: <l_fs_vbap> TYPE vbapvb.                   "mod-001++
+
+* BEGIN OF MOD-001
+
+* Local constant variable declaration.
+  CONSTANTS: l_c_ap02           TYPE vwpos     VALUE 'APO2',
+             l_c_memory_id      TYPE memory_id VALUE 'DEVCR0017680',
+             l_c_barcode_attach TYPE /glb/rgt_fname VALUE 'BARCODE_ATTACH'.  "MOD-006H++
+
+* END OF MOD-001
+
+
+*Copy idoc data into temp. table
+*  l_i_temp[]  =  didoc_data[]. "MOD-007H--
+*  SORT  l_i_temp[] BY segnam. "MOD-007H--
+
+*If Sales_document is not available, get it from Header segment
+  IF sales_document IS INITIAL.
+*Sorted Above
+    READ TABLE l_i_temp INTO l_wa_didoc_data "#EC CI_SORT_BINARY  MOD-006H++ CI FIX++
+               WITH KEY segnam = c_e1edk01.
+*                BINARY SEARCH. "MOD-007H--
+    IF sy-subrc IS INITIAL.
+      l_wa_e1edk01 = l_wa_didoc_data-sdata.
+      sales_document = l_wa_e1edk01-belnr.
+      CLEAR l_wa_e1edk01.
+    ENDIF.
+  ENDIF.
+
+* If SALES DOCUMENT NUMBER is not found, exit from FM.
+  IF sales_document IS INITIAL.
+    EXIT.
+  ENDIF.
+
+  FREE l_i_temp[].
+  CLEAR: l_v_erdat.                                        "MOD-006H++
+* Get Sales Organization for the sales document
+  SELECT SINGLE
+                erdat                                       "MOD-006H++
+                vkorg  "sales organization
+                auart                                       " MOD-004++
+           FROM vbak
+           INTO
+                (l_v_erdat,                                 "MOD-006H++
+                 v_vkorg, l_v_auart)
+           WHERE vbeln = sales_document.
+  IF sy-subrc IS INITIAL.
+
+* Get data from Pass Through Configuration table for sales Org
+    SELECT vkorg           "sales organization
+           segname         "segment name
+           fname           "field name
+           segment_ind     "sement indicator
+           data_allow      "data entry allowed
+     FROM  /glb/rgtt_ptconf
+     INTO TABLE l_i_config
+     WHERE vkorg = v_vkorg.
+    IF sy-subrc IS INITIAL.
+      SORT l_i_config BY vkorg segname fname.
+    ENDIF.
+  ENDIF.
+*  begin of mod-001
+*           Importing the XVAP table from the FM /GLB/RGT_BATCH_CLASSIFICATION.
+  IMPORT l_i_xvbap TO l_i_xvbap FROM MEMORY ID l_c_memory_id.
+  IF sy-subrc IS INITIAL.
+    LOOP AT l_i_xvbap ASSIGNING <l_fs_vbap>.
+      <l_fs_vbap>-vbeln = sales_document.
+    ENDLOOP.
+*    UNASSIGN <l_fs_vbap>.                                 "--MOD-002
+    FREE MEMORY ID l_c_memory_id.
+  ENDIF.
+*  end of mod-001
+
+* Check Pass Through Configuration table initial or not
+  IF NOT l_i_config[] IS INITIAL.
+
+* Read all Market Segments from IDOC Data table
+*This is Idoc table, So cannot be used as SORTED table. This will have data for a
+*single Sales document, so numbder of entries will be less than 500.
+    LOOP AT didoc_data INTO l_wa_didoc_data
+                       WHERE segnam CS c_market_field "#EC CI_STDSEQ  MOD-006H++ CI FIX++
+                       OR    segnam EQ c_e1edp01.
+* Determine Item Number from the respective item segment E1EDP01
+* and take the respective Item Number
+      IF l_wa_didoc_data-segnam EQ c_e1edp01.
+* -- Comments for fix added by Dwiti on 21-Apr-09 to prevent short dump
+* The item number should be taken from the actual sales order created against the idoc
+* POSEX field in VBAP could be used to link the idoc and sales item
+*       v_posnr = l_wa_didoc_data-sdata+0(6).               "--MOD-002
+* >> Updated against MOD-002 by Dwiti on 21-Apr-09
+        l_v_idoc_item = l_wa_didoc_data-sdata+0(6).
+* >> MOD-003++
+        CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+          EXPORTING
+            input  = l_v_idoc_item
+          IMPORTING
+            output = l_v_idoc_item.
+* << MOD-003++
+*This is Imported from another FM, So cannot be used as SORTED table.
+*This will have data for a single Sales document, so numbder of entries will be
+*less.
+        READ TABLE l_i_xvbap ASSIGNING <l_fs_vbap> "#EC CI_STDSEQ  MOD-006H++ CI FIX++
+          WITH KEY vbeln = sales_document
+                   posex = l_v_idoc_item.
+        IF sy-subrc IS INITIAL.
+          v_posnr = <l_fs_vbap>-posnr.                      "++MOD-002
+        ELSE.
+          CONTINUE.
+        ENDIF.
+* << MOD-002++
+      ENDIF.
+
+* Check whether the segment is configured in config table and
+* field name in the segment is marked for data entry
+      l_wa_cust_seg = l_wa_didoc_data-sdata.
+*Sorted above
+      READ TABLE l_i_config INTO l_wa_config WITH KEY "#EC CI_SORT_BINARY  MOD-006H++ CI FIX++
+                 vkorg = v_vkorg
+                 segname = l_wa_didoc_data-segnam
+                 fname = l_wa_cust_seg-fname
+*                 data_allow = c_check            "MOD-005--
+                 BINARY SEARCH.
+      IF sy-subrc = 0.
+* Check segment Indicator to determine the Item Number
+        IF l_wa_config-segment_ind = c_check.
+          CLEAR l_wa_custdata-posnr.
+        ELSE.
+          l_wa_custdata-posnr = v_posnr.
+
+*  BEGIN OF MOD-001
+
+* In RBA there’s no interest in Header information, only items. In here we
+* append the internal table with the RBA sub-items and also copying the
+* customer PT Data from the main item into each sub-item. The RBA sub-items
+* have 2 unique attributes: 1. the higher level item is non blank (xvbap-uepos
+* <> ‘’); 2. the usage indicator is always equal to ‘AP02’ (xvbap-vwpos eq
+* ‘AP02’).
+*This is Imported from another FM, So cannot be used as SORTED table.
+*This will have data for a single Sales document, so numbder of entries will be
+*less.
+          LOOP AT l_i_xvbap ASSIGNING <l_fs_vbap>
+                  WHERE vbeln = sales_document AND "#EC CI_STDSEQ  MOD-006H++ CI FIX++
+      uepos = v_posnr AND
+      vwpos EQ l_c_ap02.
+
+*                 Populating the WA for the customer data
+            l_wa_custdata-mandt      = sy-mandt.
+            l_wa_custdata-vkorg      = v_vkorg.
+            l_wa_custdata-vbeln      = sales_document.
+            l_wa_custdata-posnr      = <l_fs_vbap>-posnr.
+            l_wa_custdata-fname      = l_wa_cust_seg-fname.
+            l_wa_custdata-fvalue     = l_wa_cust_seg-fvalue.
+            l_wa_custdata-in_segname = l_wa_config-segname.
+
+
+*                 Appending the data to the customer data table
+            APPEND l_wa_custdata TO l_i_custdata.
+
+            CLEAR l_wa_custdata.
+
+*              ENDIF.    "if check for the uepos and vwpos
+
+          ENDLOOP.
+* Still need to append the main item in the pt_data table.
+          l_wa_custdata-posnr = v_posnr.
+*          UNASSIGN <l_fs_vbap>.  COMMENTED AGRV Causing DUMP
+*  END OF MOD-001
+
+        ENDIF.
+        l_wa_custdata-mandt = sy-mandt.
+        l_wa_custdata-vkorg = v_vkorg.
+        l_wa_custdata-vbeln = sales_document.
+        l_wa_custdata-fname = l_wa_cust_seg-fname.
+        l_wa_custdata-fvalue = l_wa_cust_seg-fvalue.
+        l_wa_custdata-in_segname = l_wa_config-segname.
+
+        IF l_wa_custdata-fname = 'HYBRIS_ID' .
+          l_wa_custdata-updat      = sy-datum.
+          l_wa_custdata-uptim      = sy-uzeit .
+        ENDIF .
+
+*Append the internal table with Customer Pass Through Data
+        APPEND l_wa_custdata TO l_i_custdata.
+
+        CLEAR l_wa_custdata.
+      ENDIF.
+*Begin of MOD-006H++
+*      l_V_index = l_v_index + 1 .
+*      l_v_barcode_attach = l_V_index .
+*      CONDENSE l_v_barcode_attach.
+*      CONCATENATE l_c_barcode_attach  l_v_barcode_attach INTO l_v_barcode_attach.
+*      CONDENSE  l_v_barcode_attach NO-GAPS .
+      IF l_wa_cust_seg-fname+0(14) = l_c_barcode_attach.
+        l_v_barcode = l_wa_cust_seg-fvalue.
+      ENDIF.
+*End of MOD-006H++
+      CLEAR : l_wa_config, l_wa_didoc_data, l_wa_custdata.
+*    ENDLOOP.
+
+*Begin of MOD-006H++
+    IF l_v_barcode IS NOT INITIAL.
+      PERFORM f_create_barcode USING  sales_document
+                                      l_v_erdat
+                                      l_v_barcode
+                                      v_vkorg
+                            CHANGING  l_flg_barcd_success.
+*NO use of l_flg_barcd_success yet, this is just to give the indication
+*whether the Barcode create is successful or not.
+      IF l_flg_barcd_success = abap_true.
+        CLEAR: l_v_barcode.
+      ENDIF.
+    ENDIF.
+*End of MOD-006H++
+ENDLOOP .
+    IF NOT l_i_custdata[] IS INITIAL.
+
+* UPDATE the Customer Pass Through Data table
+*It will actually INSERT a new record every time because there will be always
+*a new Sales document created
+      MODIFY /glb/rgtt_ptdata FROM TABLE l_i_custdata. "#EC CI_NO_ENQ "#EC CI_SUBRC  MOD-006H++  CI FIX++
+*This is a separate LUW, updating a custom table along with sales order update.
+*The process should continue irrespective of the custom database update result.
+    ENDIF.
+
+    CLEAR : l_wa_didoc_data, l_wa_e1edk01, v_vkorg, l_i_config, v_posnr,l_i_custdata.
+  ENDIF.
+
+* Begin of MOD-004++
+**  IF l_v_auart = 'ZRR'.
+**    LOOP AT didoc_data INTO l_wa_didoc_data.
+**
+**      IF l_wa_didoc_data-segnam EQ c_e1edp01.
+**
+**        l_wa_e1edp01 = l_wa_didoc_data-sdata.
+**
+**        l_v_posex = l_wa_didoc_data-sdata+0(6).
+**        CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+**          EXPORTING
+**            input  = l_v_posex
+**          IMPORTING
+**            output = l_v_posex.
+**
+**      ELSEIF l_wa_didoc_data-segnam EQ c_e1edp02.
+**
+**        IF l_wa_didoc_data-sdata+0(3) = '013' OR l_wa_didoc_data-sdata+0(3) = '009'.
+**
+**          MOVE l_wa_didoc_data-sdata TO l_wa_e1edp02.
+**
+**          l_v_vbeln = l_wa_e1edp02-belnr.
+**          CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+**            EXPORTING
+**              input  = l_v_vbeln
+**            IMPORTING
+**              output = l_v_vbeln.
+**
+**
+**          l_wa_vbfa-mandt = sy-mandt.
+**          l_wa_vbfa-vbelv = l_v_vbeln.
+**          l_wa_vbfa-posnv = l_v_posex.
+**          l_wa_vbfa-vbtyp_n = 'H'.
+**          l_wa_vbfa-vbeln = sales_document.
+**          l_wa_vbfa-posnn = l_v_posex.
+**
+**          IF l_wa_didoc_data-sdata+0(3) = '013'.
+**            l_wa_vbfa-vbtyp_v = 'C'.
+**          ELSEIF l_wa_didoc_data-sdata+0(3) = '009'.
+**            l_wa_vbfa-vbtyp_v = 'M'.
+**          ENDIF.
+**
+**          READ TABLE l_i_xvbap INTO l_wa_xvbap WITH KEY
+**                      vbeln = sales_document
+**                      posnr = l_v_posex.
+**          IF sy-subrc IS INITIAL.
+***          l_wa_vbfa-rfwrt = l_wa_xvbap-netwr.
+***          l_wa_vbfa-waers = l_wa_xvbap-waerk.
+***          l_wa_vbfa-rfmng = l_wa_xvbap-klmeng.
+**            l_wa_vbfa-meins = l_wa_xvbap-meins.
+**            l_wa_vbfa-vrkme = l_wa_xvbap-vrkme.
+**          ENDIF.
+**
+**          l_wa_vbfa-rfmng = l_wa_e1edp01-menge.
+**          l_wa_vbfa-erdat = sy-datum.
+**          l_wa_vbfa-erzet = sy-uzeit.
+**
+**          l_wa_vbfa-updkz = 'I'.
+**
+**          APPEND l_wa_vbfa TO l_i_vbfa.
+**          CLEAR l_wa_vbfa.
+**        ENDIF.
+**      ENDIF.
+**
+**    ENDLOOP.
+
+**** The following logic will insert records in VBFA
+**    CALL FUNCTION 'RV_DOCUMENT_FLOW_UPDATE'
+**      EXPORTING
+**        f_struktur = 'VBFA'
+**        f_vbeln    = sales_document
+**      TABLES
+**        fxtabl     = l_i_vbfa
+**        fxvbfa     = l_i_vbfa
+**        fytabl     = l_i_yvbfa
+**        fyvbfa     = l_i_yvbfa.
+**  ENDIF.
+*** End of MOD-004++
+
+ENDFUNCTION.
