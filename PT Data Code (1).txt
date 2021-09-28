@@ -29,8 +29,7 @@
 *----------------------------------------------------------------------*
 * MOD-004 | 10/09/09  |Asmita Pal   |  GD2K9A1HJV  |   DEVWR0022349    *
 * DESCRIPTION : In case of ZRR creation from refernce order or invoice,*
-* the item document flow has been updated, which was not happening     *
-* before                                                               *
+* the item document flow has been updated, which was not happening     *                                                              *
 *----------------------------------------------------------------------*
 * MOD-005 | 18/03/2013  |R.V.Sathyanarayanan | RD2K9AEHO2| RM0005973741*
 * SUPPLIER : IBM                                                       *
